@@ -2,7 +2,8 @@
 # ============================================================
 # Maxim's Cross-Device Sync Daemon
 # Runs on Mac Mini (primary) and MacBook Air (secondary)
-# Auto-syncs OpenClaw workspace + Obsidian vault when on home WiFi
+# Auto-syncs OpenClaw workspace via Git
+# Obsidian vault syncs via iCloud (no git needed)
 # ============================================================
 
 set -euo pipefail
@@ -12,9 +13,8 @@ HOME_WIFI_SSID="${HOME_WIFI_SSID:-}"          # Set this to your home WiFi name
 SYNC_DIR="${SYNC_DIR:-$HOME/.maxim-sync}"
 LOG_FILE="${SYNC_DIR}/sync.log"
 LOCK_FILE="${SYNC_DIR}/sync.lock"
-OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/Maxim-Vault}"
 OPENCLAW_WORKSPACE="${OPENCLAW_WORKSPACE:-$HOME/.kimi_openclaw/workspace}"
-GIT_REMOTE="${GIT_REMOTE:-}"                   # e.g., git@github.com:username/maxim-sync.git
+GIT_REMOTE="${GIT_REMOTE:-}"                   # e.g., git@github.com:username/maxim-workspace.git
 
 # Sync intervals (seconds)
 WIFI_CHECK_INTERVAL=30
@@ -59,13 +59,19 @@ release_lock() {
 # ── Git Sync Functions ──
 sync_openclaw_workspace() {
     log "=== Syncing OpenClaw Workspace ==="
+    
+    if [[ ! -d "$OPENCLAW_WORKSPACE" ]]; then
+        log "ERROR: OpenClaw workspace not found at $OPENCLAW_WORKSPACE"
+        return 1
+    fi
+    
     cd "$OPENCLAW_WORKSPACE"
     
     # Check if git repo initialized
     if [[ ! -d .git ]]; then
         log "Initializing git repo in OpenClaw workspace..."
         git init
-        git branch -m main
+        git branch -m main 2>/dev/null || true
     fi
     
     # Configure git if not already
@@ -86,66 +92,32 @@ sync_openclaw_workspace() {
         if ! git remote get-url origin &>/dev/null; then
             git remote add origin "$GIT_REMOTE"
         fi
-        git push origin main 2>/dev/null || log "Push failed - may need to pull first"
-    fi
-}
-
-sync_obsidian_vault() {
-    log "=== Syncing Obsidian Vault ==="
-    
-    if [[ ! -d "$OBSIDIAN_VAULT" ]]; then
-        log "Obsidian vault not found at $OBSIDIAN_VAULT"
-        return 0
-    fi
-    
-    cd "$OBSIDIAN_VAULT"
-    
-    # Check if git repo initialized
-    if [[ ! -d .git ]]; then
-        log "Initializing git repo in Obsidian vault..."
-        git init
-        git branch -m main
-        
-        # Create .gitignore for Obsidian
-        cat > .gitignore << 'EOF'
-.obsidian/workspace.json
-.obsidian/workspace-mobile.json
-.obsidian/graph.json
-.obsidian/plugins/*/data.json
-.trash/
-.DS_Store
-EOF
-    fi
-    
-    git config user.email "sync@maxim.local" 2>/dev/null || true
-    git config user.name "Maxim Sync" 2>/dev/null || true
-    
-    git add -A
-    if git diff --cached --quiet; then
-        log "No changes in Obsidian vault"
-    else
-        git commit -m "auto-sync: $(date '+%Y-%m-%d %H:%M:%S')" || true
-        log "Committed Obsidian vault changes"
-    fi
-    
-    if [[ -n "$GIT_REMOTE" ]]; then
-        if ! git remote get-url origin &>/dev/null; then
-            git remote add origin "$GIT_REMOTE"
+        if git push origin main 2>/dev/null; then
+            log "Pushed to remote"
+        else
+            log "Push failed - may need to pull first or check remote"
         fi
-        git push origin main 2>/dev/null || log "Push failed - may need to pull first"
+    else
+        log "No GIT_REMOTE configured — changes committed locally only"
     fi
 }
 
 # ── Pull from remote (for MacBook when it comes online) ──
 pull_updates() {
+    if [[ -z "$GIT_REMOTE" ]]; then
+        return 0
+    fi
+    
     log "=== Pulling remote updates ==="
     
-    for dir in "$OPENCLAW_WORKSPACE" "$OBSIDIAN_VAULT"; do
-        if [[ -d "$dir/.git" ]]; then
-            cd "$dir"
-            git pull origin main 2>/dev/null || log "Pull failed for $dir"
+    if [[ -d "$OPENCLAW_WORKSPACE/.git" ]]; then
+        cd "$OPENCLAW_WORKSPACE"
+        if git pull origin main 2>/dev/null; then
+            log "Pulled latest workspace changes"
+        else
+            log "No remote changes to pull"
         fi
-    done
+    fi
 }
 
 # ── Main sync function ──
@@ -165,24 +137,28 @@ run_sync() {
     
     # Then push local changes
     sync_openclaw_workspace
-    sync_obsidian_vault
     
     log "Sync cycle complete"
 }
 
 # ── Daemon mode ──
 run_daemon() {
-    log "Starting Maxim Sync Daemon"
-    log "Home WiFi: ${HOME_WIFI_SSID:-'(any network)' }"
+    log "=== Maxim Sync Daemon Started ==="
+    log "Home WiFi: ${HOME_WIFI_SSID:-'(any network)'}"
     log "Sync directory: $SYNC_DIR"
+    log "Workspace: $OPENCLAW_WORKSPACE"
+    log "Git remote: ${GIT_REMOTE:-'(not configured)'}"
     
     while true; do
         if is_home_wifi; then
             log "On home WiFi — syncing..."
             run_sync
+            log "Next sync in ${SYNC_INTERVAL}s"
             sleep "$SYNC_INTERVAL"
         else
-            log "Not on home WiFi — checking again in ${WIFI_CHECK_INTERVAL}s"
+            local current_ssid
+            current_ssid=$(get_wifi_ssid)
+            log "Not on home WiFi (current: '${current_ssid:-none}') — checking again in ${WIFI_CHECK_INTERVAL}s"
             sleep "$WIFI_CHECK_INTERVAL"
         fi
     done
@@ -197,16 +173,21 @@ case "${1:-daemon}" in
         run_daemon
         ;;
     status)
+        echo "=== Maxim Sync Daemon Status ==="
         echo "WiFi SSID: $(get_wifi_ssid)"
-        echo "Home WiFi configured: ${HOME_WIFI_SSID:-'(not set)' }"
+        echo "Home WiFi configured: ${HOME_WIFI_SSID:-'(not set)'}"
         echo "Lock file: $LOCK_FILE"
         if [[ -f "$LOCK_FILE" ]]; then
             echo "Sync lock active (PID: $(cat "$LOCK_FILE"))"
         else
             echo "No sync lock"
         fi
+        echo ""
         echo "Recent log entries:"
         tail -20 "$LOG_FILE" 2>/dev/null || echo "(no log yet)"
+        echo ""
+        echo "Git log (workspace):"
+        cd "$OPENCLAW_WORKSPACE" 2>/dev/null && git log --oneline -5 2>/dev/null || echo "(not a git repo)"
         ;;
     *)
         echo "Usage: $0 {once|daemon|status}"
