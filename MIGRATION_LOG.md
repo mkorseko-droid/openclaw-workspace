@@ -7,7 +7,7 @@
 
 ## Summary
 
-Migrated **498 markdown/text files** from Claude Code project directories into the Obsidian vault (`Maxim-Vault`). All project index files updated to reflect imported content.
+Migrated **649 markdown/text files** from Claude Code project directories into the Obsidian vault (`Maxim-Vault`). All project index files updated to reflect imported content.
 
 ## What Was Done
 
@@ -26,7 +26,8 @@ Scanned `~/Claude Code/` directory and catalogued all `.md` and `.txt` files acr
 | My Health | 2 | Health tracking config |
 | Global Brother | 1 | H2 2026 transition plan |
 | AI role | 1 | Anthropic partnership analysis |
-| **Total** | **498** | |
+| Colt Group | 151 | CUAS initiative, PE rerating, The Translator narrative, AI council stress tests |
+| **Total** | **649** | |
 
 ### 2. File Migration
 Copied all files into vault subfolders named `claude-code/` under each project:
